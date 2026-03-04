@@ -50,8 +50,8 @@ func main() {
 	// 由于这只是 Example，我们用占位 URL
 	config := &migration.Config{
 		MigrationKey:   "user-getUser-api",
-		AdminUrl:       "http://localhost:8080",
-		DiffServiceUrl: "http://localhost:8081",
+		AdminUrl:       "https://migration.bulgat.top",
+		DiffServiceUrl: "https://diff-migration.bulgat.top",
 	}
 
 	// 2. 构造客户端
