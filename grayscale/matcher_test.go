@@ -4,9 +4,17 @@ import (
 	"testing"
 )
 
+type mockRuleProvider struct {
+	rules []GrayRule
+}
+
+func (m *mockRuleProvider) GetRules(migrationKey string) []GrayRule {
+	return m.rules
+}
+
 func TestDefaultMatcher_Percentage(t *testing.T) {
-	matcher := &DefaultMatcher{
-		Rules: []GrayRule{
+	provider := &mockRuleProvider{
+		rules: []GrayRule{
 			{
 				RuleType:  "PERCENTAGE",
 				RuleValue: "100",
@@ -14,21 +22,22 @@ func TestDefaultMatcher_Percentage(t *testing.T) {
 			},
 		},
 	}
+	matcher := &DefaultMatcher{RuleProvider: provider}
 
 	params := map[string]interface{}{}
-	if !matcher.Match(params) {
+	if !matcher.Match("test_key", params) {
 		t.Error("Expected 100% to match")
 	}
 
-	matcher.Rules[0].RuleValue = "0"
-	if matcher.Match(params) {
+	provider.rules[0].RuleValue = "0"
+	if matcher.Match("test_key", params) {
 		t.Error("Expected 0% to not match")
 	}
 }
 
 func TestDefaultMatcher_Whitelist(t *testing.T) {
-	matcher := &DefaultMatcher{
-		Rules: []GrayRule{
+	provider := &mockRuleProvider{
+		rules: []GrayRule{
 			{
 				RuleType:  "WHITELIST",
 				RuleValue: `["1001", "1002"]`,
@@ -36,21 +45,22 @@ func TestDefaultMatcher_Whitelist(t *testing.T) {
 			},
 		},
 	}
+	matcher := &DefaultMatcher{RuleProvider: provider}
 
 	paramsMatch := map[string]interface{}{"userId": "1001"}
-	if !matcher.Match(paramsMatch) {
+	if !matcher.Match("test_key", paramsMatch) {
 		t.Error("Expected userId 1001 to match whitelist")
 	}
 
 	paramsNoMatch := map[string]interface{}{"userId": "1003"}
-	if matcher.Match(paramsNoMatch) {
+	if matcher.Match("test_key", paramsNoMatch) {
 		t.Error("Expected userId 1003 to not match whitelist")
 	}
 }
 
 func TestDefaultMatcher_Blacklist(t *testing.T) {
-	matcher := &DefaultMatcher{
-		Rules: []GrayRule{
+	provider := &mockRuleProvider{
+		rules: []GrayRule{
 			{
 				RuleType:  "BLACKLIST",
 				RuleValue: `["1001"]`,
@@ -63,23 +73,24 @@ func TestDefaultMatcher_Blacklist(t *testing.T) {
 			},
 		},
 	}
+	matcher := &DefaultMatcher{RuleProvider: provider}
 
 	// Blacklist should immediately return false, even if percentage would match next
 	paramsBlacklisted := map[string]interface{}{"userId": "1001"}
-	if matcher.Match(paramsBlacklisted) {
+	if matcher.Match("test_key", paramsBlacklisted) {
 		t.Error("Expected userId 1001 to be blacklisted and NOT match")
 	}
 
 	// Not in blacklist, should fall through to percentage
 	paramsAllowed := map[string]interface{}{"userId": "1002"}
-	if !matcher.Match(paramsAllowed) {
+	if !matcher.Match("test_key", paramsAllowed) {
 		t.Error("Expected userId 1002 to match through percentage rule")
 	}
 }
 
 func TestDefaultMatcher_DisabledRule(t *testing.T) {
-	matcher := &DefaultMatcher{
-		Rules: []GrayRule{
+	provider := &mockRuleProvider{
+		rules: []GrayRule{
 			{
 				RuleType:  "PERCENTAGE",
 				RuleValue: "100",
@@ -87,9 +98,10 @@ func TestDefaultMatcher_DisabledRule(t *testing.T) {
 			},
 		},
 	}
+	matcher := &DefaultMatcher{RuleProvider: provider}
 
 	params := map[string]interface{}{}
-	if matcher.Match(params) {
+	if matcher.Match("test_key", params) {
 		t.Error("Expected disabled rule to not match")
 	}
 }

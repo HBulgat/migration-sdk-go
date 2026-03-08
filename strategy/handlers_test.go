@@ -37,7 +37,7 @@ type MockMatcher struct {
 	ShouldMatch bool
 }
 
-func (m *MockMatcher) Match(params map[string]interface{}) bool {
+func (m *MockMatcher) Match(migrationKey string, params map[string]interface{}) bool {
 	return m.ShouldMatch
 }
 

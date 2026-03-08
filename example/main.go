@@ -49,7 +49,6 @@ func main() {
 	// 1. 初始化配置 (实际项目中 AdminUrl/DiffUrl 指向真实地址或走配置中心读取)
 	// 由于这只是 Example，我们用占位 URL
 	config := &migration.Config{
-		MigrationKey:   "user-getUser-api",
 		AdminUrl:       "https://migration.bulgat.top",
 		DiffServiceUrl: "https://diff-migration.bulgat.top",
 	}
@@ -59,7 +58,7 @@ func main() {
 	client := migration.NewClient(config)
 
 	// 3. 得到包装后的执行实例
-	executeFn := client.Wrap(targetOld, targetNew, targetFallback, userParamHandler)
+	executeFn := client.Wrap("user-getUser-api", targetOld, targetNew, targetFallback, userParamHandler)
 
 	// 4. 业务侧发起调用 (参数：userId="1001", level=5)
 	fmt.Println("--- Start Executing ---")

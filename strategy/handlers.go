@@ -58,7 +58,7 @@ type ValidationGrayStrategy struct {
 func (s *ValidationGrayStrategy) Execute(oldFunc TargetFunc, newFunc TargetFunc, fallbackFunc FallbackFunc,
 	paramHandler ParamHandler, migrationKey string, args ...interface{}) (interface{}, error) {
 	params := paramHandler(args...)
-	hit := s.Matcher.Match(params)
+	hit := s.Matcher.Match(migrationKey, params)
 
 	newCh := asyncInvoke(newFunc, fallbackFunc, args...)
 	oldRes, oldErr := invokeWithFallback(oldFunc, fallbackFunc, args...)
@@ -99,7 +99,7 @@ type GoLiveGrayStrategy struct {
 func (s *GoLiveGrayStrategy) Execute(oldFunc TargetFunc, newFunc TargetFunc, fallbackFunc FallbackFunc,
 	paramHandler ParamHandler, migrationKey string, args ...interface{}) (interface{}, error) {
 	params := paramHandler(args...)
-	hit := s.Matcher.Match(params)
+	hit := s.Matcher.Match(migrationKey, params)
 
 	if hit {
 		oldCh := asyncInvoke(oldFunc, fallbackFunc, args...)
@@ -151,7 +151,7 @@ type DecommissioningGrayStrategy struct {
 func (s *DecommissioningGrayStrategy) Execute(oldFunc TargetFunc, newFunc TargetFunc, fallbackFunc FallbackFunc,
 	paramHandler ParamHandler, migrationKey string, args ...interface{}) (interface{}, error) {
 	params := paramHandler(args...)
-	hit := s.Matcher.Match(params)
+	hit := s.Matcher.Match(migrationKey, params)
 
 	if hit {
 		return invokeWithFallback(newFunc, fallbackFunc, args...)

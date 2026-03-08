@@ -8,12 +8,17 @@ import (
 
 // Matcher 灰度匹配器接口
 type Matcher interface {
-	Match(params map[string]interface{}) bool
+	Match(migrationKey string, params map[string]interface{}) bool
+}
+
+// RuleProvider 提供规则获取的接口
+type RuleProvider interface {
+	GetRules(migrationKey string) []GrayRule
 }
 
 // DefaultMatcher 默认灰度匹配器实现
 type DefaultMatcher struct {
-	Rules []GrayRule
+	RuleProvider RuleProvider
 }
 
 type GrayRule struct {
@@ -22,12 +27,13 @@ type GrayRule struct {
 	Enable    bool   `json:"enable"`
 }
 
-func (m *DefaultMatcher) Match(params map[string]interface{}) bool {
-	if len(m.Rules) == 0 {
+func (m *DefaultMatcher) Match(migrationKey string, params map[string]interface{}) bool {
+	rules := m.RuleProvider.GetRules(migrationKey)
+	if len(rules) == 0 {
 		return false
 	}
 
-	for _, rule := range m.Rules {
+	for _, rule := range rules {
 		if !rule.Enable {
 			continue
 		}
