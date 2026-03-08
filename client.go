@@ -1,9 +1,9 @@
 package migration
 
 import (
-	"encoding/json"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/HBulgat/migration-sdk-go/diff"
 	"github.com/HBulgat/migration-sdk-go/enums"
@@ -14,36 +14,48 @@ import (
 
 // Config 迁移配置结构体
 type Config struct {
-	DiffServiceUrl string // 独立 Diff 服务的地址，例如 "http://diff-service:8081"
-	AdminUrl       string // Admin API 的地址，用于拉取配置，例如 "http://admin-api:8080"
+	DiffServiceUrl            string                          `json:"diff_service_url"`            // 独立 Diff 服务的地址，例如 "http://diff-service:8081"
+	AdminUrl                  string                          `json:"admin_url"`                   // Admin API 的地址，用于拉取配置，例如 "http://admin-api:8080"
+	RefreshInterval           time.Duration                   `json:"refresh_interval"`            // 缓存后台刷新间隔，默认为 60s
+	InternalToken             string                          `json:"internal_token"`              // Admin API 的内部鉴权 Token，例如 "MIGRATION_DEFAULT_SDK_TOKEN"
+	PercentageRoutingStrategy enums.PercentageRoutingStrategy `json:"percentage_routing_strategy"` // 百分比路由策略，支持 HASH 和 RANDOM，默认为 HASH
 }
 
 // Client 迁移客户端
 type Client struct {
-	config   *Config
-	provider provider.ConfigProvider
-	reporter *diff.Reporter
-	factory  *strategy.Factory
-
+	config        *Config
+	provider      provider.ConfigProvider
+	reporter      *diff.Reporter
+	factory       *strategy.Factory
 	mu            sync.RWMutex
+	statusCache   map[string]enums.MigrationTaskStatus
 	grayRuleCache map[string][]grayscale.GrayRule
-	statusCache   map[string]enums.MigrationStatus
+	trackedKeys   map[string]bool
 }
 
 // NewClient 创建迁移客户端
 func NewClient(config *Config) *Client {
-	prv := provider.NewAPIProvider(config.AdminUrl)
+	if config.RefreshInterval == 0 {
+		config.RefreshInterval = 60 * time.Second
+	}
+	if config.PercentageRoutingStrategy == "" {
+		config.PercentageRoutingStrategy = enums.StrategyHash
+	}
+
+	prv := provider.NewAPIProvider(config.AdminUrl, config.InternalToken)
 	reporter := diff.NewReporter(config.DiffServiceUrl)
 
 	client := &Client{
 		config:        config,
 		provider:      prv,
 		reporter:      reporter,
+		statusCache:   make(map[string]enums.MigrationTaskStatus),
 		grayRuleCache: make(map[string][]grayscale.GrayRule),
-		statusCache:   make(map[string]enums.MigrationStatus),
+		trackedKeys:   make(map[string]bool),
 	}
 
 	client.initFactory()
+	go client.startBackgroundRefresh()
 	return client
 }
 
@@ -53,51 +65,21 @@ func (c *Client) GetRules(migrationKey string) []grayscale.GrayRule {
 	rules, exists := c.grayRuleCache[migrationKey]
 	c.mu.RUnlock()
 
-	if exists {
-		return rules
+	if !exists {
+		c.fetchAndCache(migrationKey)
+		c.mu.RLock()
+		rules = c.grayRuleCache[migrationKey]
+		c.mu.RUnlock()
 	}
-	return nil
+
+	return rules
 }
 
 // initFactory 初始化路由工厂
 func (c *Client) initFactory() {
 	c.factory = &strategy.Factory{
 		Reporter:    c.reporter,
-		GrayMatcher: &grayscale.DefaultMatcher{RuleProvider: c},
-	}
-}
-
-// loadConfigIfAbsent 确保加载指定 migrationKey 的缓存
-func (c *Client) loadConfigIfAbsent(migrationKey string) {
-	c.mu.RLock()
-	_, statusOK := c.statusCache[migrationKey]
-	c.mu.RUnlock()
-
-	if statusOK {
-		return
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Double check
-	if _, ok := c.statusCache[migrationKey]; ok {
-		return
-	}
-
-	if status, err := c.provider.GetStatus(migrationKey); err == nil {
-		c.statusCache[migrationKey] = enums.MigrationStatus(status)
-	} else {
-		c.statusCache[migrationKey] = enums.Old // 出错默认降级走旧逻辑
-		log.Printf("[Migration-SDK] Failed to get status for %s, falling back to Old", migrationKey)
-	}
-
-	if ruleStr, err := c.provider.GetGrayRules(migrationKey); err == nil && ruleStr != "" {
-		var rules []grayscale.GrayRule
-		json.Unmarshal([]byte(ruleStr), &rules)
-		c.grayRuleCache[migrationKey] = rules
-	} else {
-		c.grayRuleCache[migrationKey] = nil
+		GrayMatcher: grayscale.NewDefaultMatcher(c, c.config.PercentageRoutingStrategy),
 	}
 }
 
@@ -113,8 +95,6 @@ type ExecuteFunction struct {
 
 // Wrap 包装配置
 func (c *Client) Wrap(migrationKey string, oldFunc, newFunc strategy.TargetFunc, fallbackFunc strategy.FallbackFunc, paramHandler strategy.ParamHandler) *ExecuteFunction {
-	c.loadConfigIfAbsent(migrationKey)
-
 	return &ExecuteFunction{
 		client:       c,
 		migrationKey: migrationKey,
@@ -127,9 +107,20 @@ func (c *Client) Wrap(migrationKey string, oldFunc, newFunc strategy.TargetFunc,
 
 // Execute 执行包装了状态路由逻辑的方法
 func (e *ExecuteFunction) Execute(args ...interface{}) (interface{}, error) {
-	e.client.mu.RLock()
-	status := e.client.statusCache[e.migrationKey]
-	e.client.mu.RUnlock()
+	c := e.client
+	c.mu.RLock()
+	status, exists := c.statusCache[e.migrationKey]
+	c.mu.RUnlock()
+
+	if !exists {
+		c.fetchAndCache(e.migrationKey)
+		c.mu.RLock()
+		status, exists = c.statusCache[e.migrationKey]
+		c.mu.RUnlock()
+		if !exists {
+			status = enums.Old // 网络降级兜底
+		}
+	}
 
 	// 每次执行时从工厂获取对应的状态策略（支持实时变化）
 	s, err := e.client.factory.GetStrategy(status)
@@ -139,4 +130,60 @@ func (e *ExecuteFunction) Execute(args ...interface{}) (interface{}, error) {
 
 	// Delegate 执行
 	return s.Execute(e.oldFunc, e.newFunc, e.fallbackFunc, e.paramHandler, e.migrationKey, args...)
+}
+
+func (c *Client) fetchAndCache(migrationKey string) {
+	status, err := c.provider.GetStatus(migrationKey)
+	if err != nil {
+		log.Printf("[Migration-SDK] Failed to lazy load status for %s: %v", migrationKey, err)
+		return
+	}
+
+	rules, err := c.provider.GetGrayRules(migrationKey)
+	if err != nil {
+		log.Printf("[Migration-SDK] Failed to lazy load gray rules for %s: %v", migrationKey, err)
+		// We still cache the status even if rules fail
+		rules = []grayscale.GrayRule{}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.trackedKeys[migrationKey] = true
+	c.statusCache[migrationKey] = status
+	c.grayRuleCache[migrationKey] = rules
+}
+
+func (c *Client) startBackgroundRefresh() {
+	ticker := time.NewTicker(c.config.RefreshInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		c.mu.RLock()
+		keys := make([]string, 0, len(c.trackedKeys))
+		for k := range c.trackedKeys {
+			keys = append(keys, k)
+		}
+		c.mu.RUnlock()
+
+		for _, key := range keys {
+			// Synchronous fetch without holding the global lock
+			status, err := c.provider.GetStatus(key)
+			if err != nil {
+				log.Printf("[Migration-SDK] Background refresh failed for migration status. key=%s, err=%v", key, err)
+				continue
+			}
+
+			rules, err := c.provider.GetGrayRules(key)
+			if err != nil {
+				log.Printf("[Migration-SDK] Background refresh failed for grayscale rules. key=%s, err=%v", key, err)
+				continue
+			}
+
+			// Atomic update of cache
+			c.mu.Lock()
+			c.statusCache[key] = status
+			c.grayRuleCache[key] = rules
+			c.mu.Unlock()
+		}
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/HBulgat/migration-sdk-go/enums"
+	"github.com/HBulgat/migration-sdk-go/model"
 )
 
 // MockTargetFunc Helper target function for testing
@@ -47,18 +48,19 @@ type MockReporter struct {
 	Reports []string
 }
 
-func (r *MockReporter) Report(migrationKey string, oldRes interface{}, newRes interface{}) {
+func (r *MockReporter) Report(req *model.DiffReportRequest) {
 	r.Lock()
 	defer r.Unlock()
 
+	migrationKey := req.MigrationKey
 	oldStr := "nil"
-	if oldRes != nil {
-		oldStr = oldRes.(string)
+	if req.OldJson != "null" && req.OldJson != "" {
+		oldStr = strings.Trim(req.OldJson, "\"")
 	}
 
 	newStr := "nil"
-	if newRes != nil {
-		newStr = newRes.(string)
+	if req.NewJson != "null" && req.NewJson != "" {
+		newStr = strings.Trim(req.NewJson, "\"")
 	}
 
 	r.Reports = append(r.Reports, migrationKey+"|"+oldStr+"|"+newStr)

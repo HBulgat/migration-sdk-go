@@ -2,8 +2,14 @@ package grayscale
 
 import (
 	"encoding/json"
+	"fmt"
+	"log"
 	"math/rand"
 	"strconv"
+	"sync"
+
+	"github.com/HBulgat/migration-sdk-go/enums"
+	"github.com/jmespath/go-jmespath"
 )
 
 // Matcher 灰度匹配器接口
@@ -18,7 +24,20 @@ type RuleProvider interface {
 
 // DefaultMatcher 默认灰度匹配器实现
 type DefaultMatcher struct {
-	RuleProvider RuleProvider
+	RuleProvider              RuleProvider
+	exprCache                 sync.Map // string -> *jmespath.JMESPath
+	PercentageRoutingStrategy enums.PercentageRoutingStrategy
+}
+
+// NewDefaultMatcher 创建灰度匹配器
+func NewDefaultMatcher(ruleProvider RuleProvider, strategy enums.PercentageRoutingStrategy) *DefaultMatcher {
+	if strategy == "" {
+		strategy = enums.StrategyHash
+	}
+	return &DefaultMatcher{
+		RuleProvider:              ruleProvider,
+		PercentageRoutingStrategy: strategy,
+	}
 }
 
 type GrayRule struct {
@@ -40,7 +59,7 @@ func (m *DefaultMatcher) Match(migrationKey string, params map[string]interface{
 
 		switch rule.RuleType {
 		case "PERCENTAGE":
-			if matchPercentage(rule.RuleValue) {
+			if matchPercentage(rule.RuleValue, params, m.PercentageRoutingStrategy) {
 				return true
 			}
 		case "BLACKLIST":
@@ -54,14 +73,67 @@ func (m *DefaultMatcher) Match(migrationKey string, params map[string]interface{
 				return true
 			}
 		case "EXPRESSION":
-			// Go 侧可能需要接入 Gval 等第三方引擎计算 SpEL
-			// 这里暂时略过，按未命中处理
+			if m.matchExpression(rule.RuleValue, params) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func matchPercentage(value string) bool {
+func (m *DefaultMatcher) matchExpression(expr string, params map[string]interface{}) bool {
+	var jm *jmespath.JMESPath
+	if cached, ok := m.exprCache.Load(expr); ok {
+		jm = cached.(*jmespath.JMESPath)
+	} else {
+		compiled, err := jmespath.Compile(expr)
+		if err != nil {
+			log.Printf("[Migration-SDK] Failed to compile JMESPath expression '%s': %v", expr, err)
+			return false
+		}
+		jm = compiled
+		m.exprCache.Store(expr, jm)
+	}
+
+	result, err := jm.Search(params)
+	if err != nil {
+		log.Printf("[Migration-SDK] Failed to evaluate JMESPath expression '%s': %v", expr, err)
+		return false
+	}
+
+	if b, ok := result.(bool); ok {
+		return b
+	}
+	return false
+}
+
+func extractSubject(params map[string]interface{}) string {
+	keys := []string{"userId", "user_id", "uid", "id"}
+	for _, key := range keys {
+		if val, ok := params[key]; ok && val != nil {
+			return fmt.Sprintf("%v", val)
+		}
+	}
+	b, _ := json.Marshal(params)
+	return string(b)
+}
+
+func javaStringHashCode(s string) int32 {
+	var h int32
+	for i := 0; i < len(s); i++ {
+		h = 31*h + int32(s[i])
+	}
+	return h
+}
+
+func absolute(n int32) int32 {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
+func matchPercentage(value string, params map[string]interface{}, strategy enums.PercentageRoutingStrategy) bool {
 	percentage, err := strconv.Atoi(value)
 	if err != nil {
 		return false
@@ -72,8 +144,14 @@ func matchPercentage(value string) bool {
 	if percentage >= 100 {
 		return true
 	}
-	num := rand.Intn(100) // 0-99
-	return num < percentage
+
+	if strategy == enums.StrategyRandom {
+		return rand.Intn(100) < percentage
+	}
+
+	subject := extractSubject(params)
+	bucket := absolute(javaStringHashCode(subject)) % 100
+	return bucket < int32(percentage)
 }
 
 func matchList(value string, params map[string]interface{}, isWhitelist bool) bool {

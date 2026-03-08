@@ -5,6 +5,7 @@ import (
 
 	"github.com/HBulgat/migration-sdk-go/enums"
 	"github.com/HBulgat/migration-sdk-go/grayscale"
+	"github.com/HBulgat/migration-sdk-go/model"
 )
 
 // Strategy 定义阶段流转协议
@@ -24,7 +25,7 @@ type ParamHandler func(args ...interface{}) map[string]interface{}
 
 // Reporter 接口剥离（简写直接引用）
 type Reporter interface {
-	Report(migrationKey string, oldRes interface{}, newRes interface{})
+	Report(req *model.DiffReportRequest)
 }
 
 // Factory 策略工厂
@@ -34,7 +35,7 @@ type Factory struct {
 }
 
 // GetStrategy 根据状态机枚举获取流转策略实现
-func (f *Factory) GetStrategy(status enums.MigrationStatus) (Strategy, error) {
+func (f *Factory) GetStrategy(status enums.MigrationTaskStatus) (Strategy, error) {
 	switch status {
 	case enums.Old:
 		return &OldOnlyStrategy{}, nil
