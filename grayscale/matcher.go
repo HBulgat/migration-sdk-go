@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"sort"
 	"strconv"
 	"sync"
 
@@ -44,6 +45,7 @@ type GrayRule struct {
 	RuleType  string `json:"rule_type"`
 	RuleValue string `json:"rule_value"`
 	Enable    bool   `json:"enable"`
+	Weight    int    `json:"weight"`
 }
 
 func (m *DefaultMatcher) Match(migrationKey string, params map[string]interface{}) bool {
@@ -51,6 +53,10 @@ func (m *DefaultMatcher) Match(migrationKey string, params map[string]interface{
 	if len(rules) == 0 {
 		return false
 	}
+
+	sort.SliceStable(rules, func(i, j int) bool {
+		return rules[i].Weight > rules[j].Weight
+	})
 
 	for _, rule := range rules {
 		if !rule.Enable {
