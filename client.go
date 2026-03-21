@@ -10,6 +10,7 @@ import (
 	"github.com/HBulgat/migration-sdk-go/grayscale"
 	"github.com/HBulgat/migration-sdk-go/provider"
 	"github.com/HBulgat/migration-sdk-go/strategy"
+	"github.com/google/uuid"
 )
 
 // Config 迁移配置结构体
@@ -89,13 +90,46 @@ type ExecuteFunction struct {
 	migrationKey string
 	oldFunc      strategy.TargetFunc
 	newFunc      strategy.TargetFunc
-	fallbackFunc strategy.FallbackFunc
-	paramHandler strategy.ParamHandler
+	fallbackFunc  strategy.FallbackFunc
+	paramHandler  strategy.ParamHandler
+	postProcessor strategy.PostProcessor
+}
+
+// RequestWrapper 用于某次具体请求的包装，保证并发安全
+type RequestWrapper struct {
+	executeFn *ExecuteFunction
+	traceId   string
+}
+
+// WithTraceId 注入链路跟踪 ID，返回一个新的请求级别包装器，解决并发修改的 Data Race
+func (e *ExecuteFunction) WithTraceId(traceId string) *RequestWrapper {
+	if traceId == "" {
+		traceId = uuid.NewString()
+	}
+	return &RequestWrapper{
+		executeFn: e,
+		traceId:   traceId,
+	}
+}
+
+// Execute 封装一次执行，如果没有注入 TraceId，则自动生成
+func (e *ExecuteFunction) Execute(args ...interface{}) (interface{}, error) {
+	return e.WithTraceId("").Execute(args...)
+}
+
+// Option 定义针对 ExecuteFunction 的可选配置项
+type Option func(*ExecuteFunction)
+
+// WithPostProcessor 设置当前调用的后置数据处理器
+func WithPostProcessor(p strategy.PostProcessor) Option {
+	return func(e *ExecuteFunction) {
+		e.postProcessor = p
+	}
 }
 
 // Wrap 包装配置
-func (c *Client) Wrap(migrationKey string, oldFunc, newFunc strategy.TargetFunc, fallbackFunc strategy.FallbackFunc, paramHandler strategy.ParamHandler) *ExecuteFunction {
-	return &ExecuteFunction{
+func (c *Client) Wrap(migrationKey string, oldFunc, newFunc strategy.TargetFunc, fallbackFunc strategy.FallbackFunc, paramHandler strategy.ParamHandler, opts ...Option) *ExecuteFunction {
+	e := &ExecuteFunction{
 		client:       c,
 		migrationKey: migrationKey,
 		oldFunc:      oldFunc,
@@ -103,10 +137,17 @@ func (c *Client) Wrap(migrationKey string, oldFunc, newFunc strategy.TargetFunc,
 		fallbackFunc: fallbackFunc,
 		paramHandler: paramHandler,
 	}
+
+	for _, opt := range opts {
+		opt(e)
+	}
+
+	return e
 }
 
 // Execute 执行包装了状态路由逻辑的方法
-func (e *ExecuteFunction) Execute(args ...interface{}) (interface{}, error) {
+func (r *RequestWrapper) Execute(args ...interface{}) (interface{}, error) {
+	e := r.executeFn
 	c := e.client
 	c.mu.RLock()
 	status, exists := c.statusCache[e.migrationKey]
@@ -128,8 +169,14 @@ func (e *ExecuteFunction) Execute(args ...interface{}) (interface{}, error) {
 		s, _ = e.client.factory.GetStrategy(enums.Old) // 降级兜底
 	}
 
+	// 获取规则用于上报
+	rules, err := e.client.provider.GetGrayRules(e.migrationKey)
+	if err != nil {
+		rules = []grayscale.GrayRule{}
+	}
+
 	// Delegate 执行
-	return s.Execute(e.oldFunc, e.newFunc, e.fallbackFunc, e.paramHandler, e.migrationKey, args...)
+	return s.Execute(e.oldFunc, e.newFunc, e.fallbackFunc, e.paramHandler, e.postProcessor, e.migrationKey, r.traceId, status, rules, args...)
 }
 
 func (c *Client) fetchAndCache(migrationKey string) {

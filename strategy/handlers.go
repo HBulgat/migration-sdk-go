@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/HBulgat/migration-sdk-go/enums"
 	"github.com/HBulgat/migration-sdk-go/grayscale"
 	"github.com/HBulgat/migration-sdk-go/model"
 )
@@ -48,11 +49,12 @@ func asyncInvoke(target TargetFunc, fallback FallbackFunc, args ...interface{}) 
 }
 
 // buildDiffReq 构造提交给 Diff 服务的请求对象
-func buildDiffReq(migrationKey string, oldRes interface{}, oldErr error, oldCost int64, newRes interface{}, newErr error, newCost int64, params map[string]interface{}, hit bool, args ...interface{}) *model.DiffReportRequest {
+func buildDiffReq(migrationKey string, traceId string, status enums.MigrationTaskStatus, rules []grayscale.GrayRule, oldRes interface{}, oldErr error, oldCost int64, newRes interface{}, newErr error, newCost int64, params map[string]interface{}, hit bool, args ...interface{}) *model.DiffReportRequest {
 	oldBytes, _ := json.Marshal(oldRes)
 	newBytes, _ := json.Marshal(newRes)
 	paramBytes, _ := json.Marshal(params)
 	argsBytes, _ := json.Marshal(args)
+	rulesBytes, _ := json.Marshal(rules)
 
 	oldSuccess := oldErr == nil
 	newSuccess := newErr == nil
@@ -64,9 +66,9 @@ func buildDiffReq(migrationKey string, oldRes interface{}, oldErr error, oldCost
 		newErrStr = newErr.Error()
 	}
 
-	// Create an anonymous struct matching diff.DiffReportRequest structure purely
 	return &model.DiffReportRequest{
 		MigrationKey:        migrationKey,
+		TraceId:             traceId,
 		OldJson:             string(oldBytes),
 		NewJson:             string(newBytes),
 		OldCostTimeMs:       int(oldCost),
@@ -78,11 +80,50 @@ func buildDiffReq(migrationKey string, oldRes interface{}, oldErr error, oldCost
 		NewErrorMessage:     newErrStr,
 		OldRequestParams:    string(argsBytes),
 		NewRequestParams:    string(argsBytes),
-		MigrationTaskStatus: 0, // Not explicitly passed inside simple Strategy, left as 0
-		GrayscaleRules:      "",
+		MigrationTaskStatus: int(status),
+		GrayscaleRules:      string(rulesBytes),
 		GrayscaleHit:        hit,
 		FallbackTriggered:   oldErr != nil || newErr != nil,
 	}
+}
+
+// handleAsyncWait 是统一定义的含超时的异步 Diff 结果采集及发送帮助类
+func handleAsyncWait(ch <-chan struct{res interface{}; err error; costTime int64}, reporter Reporter, isOldAsync bool, migrationKey string, traceId string, status enums.MigrationTaskStatus, rules []grayscale.GrayRule, syncRes interface{}, syncErr error, syncCost int64, params map[string]interface{}, hit bool, postProcessor PostProcessor, args ...interface{}) {
+	if reporter == nil {
+		return
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[Migration-SDK] Panic recovered in diff reporter: %v", r)
+			}
+		}()
+		select {
+		case asyncRow := <-ch:
+			var req *model.DiffReportRequest
+			var oldRes, newRes interface{}
+			if isOldAsync {
+				oldRes, newRes = asyncRow.res, syncRes
+			} else {
+				oldRes, newRes = syncRes, asyncRow.res
+			}
+
+			if postProcessor != nil {
+				oldRes, newRes = postProcessor(oldRes, newRes)
+			}
+
+			if isOldAsync {
+				// 主线是 New，后台是 Old
+				req = buildDiffReq(migrationKey, traceId, status, rules, oldRes, asyncRow.err, asyncRow.costTime, newRes, syncErr, syncCost, params, hit, args...)
+			} else {
+				// 主线是 Old，后台是 New
+				req = buildDiffReq(migrationKey, traceId, status, rules, oldRes, syncErr, syncCost, newRes, asyncRow.err, asyncRow.costTime, params, hit, args...)
+			}
+			reporter.Report(req)
+		case <-time.After(5 * time.Second):
+			log.Printf("[Migration-SDK] Background diff task timeout for migrationKey=%s", migrationKey)
+		}
+	}()
 }
 
 // ========== 具体 7 阶段实现 ==========
@@ -91,7 +132,7 @@ func buildDiffReq(migrationKey string, oldRes interface{}, oldErr error, oldCost
 type OldOnlyStrategy struct{}
 
 func (s *OldOnlyStrategy) Execute(oldFunc TargetFunc, newFunc TargetFunc, fallbackFunc FallbackFunc,
-	paramHandler ParamHandler, migrationKey string, args ...interface{}) (interface{}, error) {
+	paramHandler ParamHandler, postProcessor PostProcessor, migrationKey string, traceId string, status enums.MigrationTaskStatus, rules []grayscale.GrayRule, args ...interface{}) (interface{}, error) {
 	return invokeWithFallback(oldFunc, fallbackFunc, args...)
 }
 
@@ -102,22 +143,22 @@ type ValidationGrayStrategy struct {
 }
 
 func (s *ValidationGrayStrategy) Execute(oldFunc TargetFunc, newFunc TargetFunc, fallbackFunc FallbackFunc,
-	paramHandler ParamHandler, migrationKey string, args ...interface{}) (interface{}, error) {
+	paramHandler ParamHandler, postProcessor PostProcessor, migrationKey string, traceId string, status enums.MigrationTaskStatus, rules []grayscale.GrayRule, args ...interface{}) (interface{}, error) {
 	params := paramHandler(args...)
 	hit := s.Matcher.Match(migrationKey, params)
 
-	newCh := asyncInvoke(newFunc, fallbackFunc, args...)
+	var newCh <-chan struct{res interface{}; err error; costTime int64}
+	if hit {
+		newCh = asyncInvoke(newFunc, fallbackFunc, args...)
+	}
+
 	start := time.Now()
 	oldRes, oldErr := invokeWithFallback(oldFunc, fallbackFunc, args...)
 	oldCost := time.Since(start).Milliseconds()
 
-	go func() {
-		newRow := <-newCh
-		if hit && s.Reporter != nil {
-			req := buildDiffReq(migrationKey, oldRes, oldErr, oldCost, newRow.res, newRow.err, newRow.costTime, params, hit, args...)
-			s.Reporter.Report(req)
-		}
-	}()
+	if hit {
+		handleAsyncWait(newCh, s.Reporter, false, migrationKey, traceId, status, rules, oldRes, oldErr, oldCost, params, hit, postProcessor, args...)
+	}
 	return oldRes, oldErr
 }
 
@@ -127,20 +168,15 @@ type ValidationAllStrategy struct {
 }
 
 func (s *ValidationAllStrategy) Execute(oldFunc TargetFunc, newFunc TargetFunc, fallbackFunc FallbackFunc,
-	paramHandler ParamHandler, migrationKey string, args ...interface{}) (interface{}, error) {
+	paramHandler ParamHandler, postProcessor PostProcessor, migrationKey string, traceId string, status enums.MigrationTaskStatus, rules []grayscale.GrayRule, args ...interface{}) (interface{}, error) {
 	params := paramHandler(args...)
 	newCh := asyncInvoke(newFunc, fallbackFunc, args...)
+	
 	start := time.Now()
 	oldRes, oldErr := invokeWithFallback(oldFunc, fallbackFunc, args...)
 	oldCost := time.Since(start).Milliseconds()
 
-	go func() {
-		newRow := <-newCh
-		if s.Reporter != nil {
-			req := buildDiffReq(migrationKey, oldRes, oldErr, oldCost, newRow.res, newRow.err, newRow.costTime, params, false, args...)
-			s.Reporter.Report(req)
-		}
-	}()
+	handleAsyncWait(newCh, s.Reporter, false, migrationKey, traceId, status, rules, oldRes, oldErr, oldCost, params, false, postProcessor, args...)
 	return oldRes, oldErr
 }
 
@@ -151,36 +187,19 @@ type GoLiveGrayStrategy struct {
 }
 
 func (s *GoLiveGrayStrategy) Execute(oldFunc TargetFunc, newFunc TargetFunc, fallbackFunc FallbackFunc,
-	paramHandler ParamHandler, migrationKey string, args ...interface{}) (interface{}, error) {
+	paramHandler ParamHandler, postProcessor PostProcessor, migrationKey string, traceId string, status enums.MigrationTaskStatus, rules []grayscale.GrayRule, args ...interface{}) (interface{}, error) {
 	params := paramHandler(args...)
 	hit := s.Matcher.Match(migrationKey, params)
 
 	if hit {
-		oldCh := asyncInvoke(oldFunc, fallbackFunc, args...)
-		start := time.Now()
-		newRes, newErr := invokeWithFallback(newFunc, fallbackFunc, args...)
-		newCost := time.Since(start).Milliseconds()
-		go func() {
-			oldRow := <-oldCh
-			if s.Reporter != nil {
-				req := buildDiffReq(migrationKey, oldRow.res, oldRow.err, oldRow.costTime, newRes, newErr, newCost, params, hit, args...)
-				s.Reporter.Report(req)
-			}
-		}()
-		return newRes, newErr
+		return invokeWithFallback(newFunc, fallbackFunc, args...)
 	}
 
 	newCh := asyncInvoke(newFunc, fallbackFunc, args...)
 	start := time.Now()
 	oldRes, oldErr := invokeWithFallback(oldFunc, fallbackFunc, args...)
 	oldCost := time.Since(start).Milliseconds()
-	go func() {
-		newRow := <-newCh
-		if s.Reporter != nil {
-			req := buildDiffReq(migrationKey, oldRes, oldErr, oldCost, newRow.res, newRow.err, newRow.costTime, params, hit, args...)
-			s.Reporter.Report(req)
-		}
-	}()
+	handleAsyncWait(newCh, s.Reporter, false, migrationKey, traceId, status, rules, oldRes, oldErr, oldCost, params, hit, postProcessor, args...)
 	return oldRes, oldErr
 }
 
@@ -190,20 +209,15 @@ type GoLiveAllStrategy struct {
 }
 
 func (s *GoLiveAllStrategy) Execute(oldFunc TargetFunc, newFunc TargetFunc, fallbackFunc FallbackFunc,
-	paramHandler ParamHandler, migrationKey string, args ...interface{}) (interface{}, error) {
+	paramHandler ParamHandler, postProcessor PostProcessor, migrationKey string, traceId string, status enums.MigrationTaskStatus, rules []grayscale.GrayRule, args ...interface{}) (interface{}, error) {
 	params := paramHandler(args...)
 	oldCh := asyncInvoke(oldFunc, fallbackFunc, args...)
+	
 	start := time.Now()
 	newRes, newErr := invokeWithFallback(newFunc, fallbackFunc, args...)
 	newCost := time.Since(start).Milliseconds()
 
-	go func() {
-		oldRow := <-oldCh
-		if s.Reporter != nil {
-			req := buildDiffReq(migrationKey, oldRow.res, oldRow.err, oldRow.costTime, newRes, newErr, newCost, params, false, args...)
-			s.Reporter.Report(req)
-		}
-	}()
+	handleAsyncWait(oldCh, s.Reporter, true, migrationKey, traceId, status, rules, newRes, newErr, newCost, params, false, postProcessor, args...)
 	return newRes, newErr
 }
 
@@ -214,7 +228,7 @@ type DecommissioningGrayStrategy struct {
 }
 
 func (s *DecommissioningGrayStrategy) Execute(oldFunc TargetFunc, newFunc TargetFunc, fallbackFunc FallbackFunc,
-	paramHandler ParamHandler, migrationKey string, args ...interface{}) (interface{}, error) {
+	paramHandler ParamHandler, postProcessor PostProcessor, migrationKey string, traceId string, status enums.MigrationTaskStatus, rules []grayscale.GrayRule, args ...interface{}) (interface{}, error) {
 	params := paramHandler(args...)
 	hit := s.Matcher.Match(migrationKey, params)
 
@@ -227,13 +241,7 @@ func (s *DecommissioningGrayStrategy) Execute(oldFunc TargetFunc, newFunc Target
 	newRes, newErr := invokeWithFallback(newFunc, fallbackFunc, args...)
 	newCost := time.Since(start).Milliseconds()
 
-	go func() {
-		oldRow := <-oldCh
-		if s.Reporter != nil {
-			req := buildDiffReq(migrationKey, oldRow.res, oldRow.err, oldRow.costTime, newRes, newErr, newCost, params, hit, args...)
-			s.Reporter.Report(req)
-		}
-	}()
+	handleAsyncWait(oldCh, s.Reporter, true, migrationKey, traceId, status, rules, newRes, newErr, newCost, params, hit, postProcessor, args...)
 	return newRes, newErr
 }
 
@@ -241,6 +249,6 @@ func (s *DecommissioningGrayStrategy) Execute(oldFunc TargetFunc, newFunc Target
 type DecommissioningAllStrategy struct{}
 
 func (s *DecommissioningAllStrategy) Execute(oldFunc TargetFunc, newFunc TargetFunc, fallbackFunc FallbackFunc,
-	paramHandler ParamHandler, migrationKey string, args ...interface{}) (interface{}, error) {
+	paramHandler ParamHandler, postProcessor PostProcessor, migrationKey string, traceId string, status enums.MigrationTaskStatus, rules []grayscale.GrayRule, args ...interface{}) (interface{}, error) {
 	return invokeWithFallback(newFunc, fallbackFunc, args...)
 }

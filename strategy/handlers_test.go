@@ -73,7 +73,7 @@ func TestOldOnlyStrategy(t *testing.T) {
 	oldFunc := MockTargetFunc("old_result", nil, 0)
 	newFunc := MockTargetFunc("new_result", nil, 0)
 
-	res, err := s.Execute(oldFunc, newFunc, nil, MockParamHandler(), "key")
+	res, err := s.Execute(oldFunc, newFunc, nil, MockParamHandler(), nil, "key", "trace_id_123", enums.Old, nil)
 
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
@@ -91,7 +91,7 @@ func TestValidationAllStrategy(t *testing.T) {
 	oldFunc := MockTargetFunc("old_result", nil, 10*time.Millisecond)
 	newFunc := MockTargetFunc("new_result", nil, 5*time.Millisecond)
 
-	res, err := s.Execute(oldFunc, newFunc, nil, MockParamHandler(), "key_test_val_all")
+	res, err := s.Execute(oldFunc, newFunc, nil, MockParamHandler(), nil, "key_test_val_all", "trace_id_123", enums.ValidationAll, nil)
 
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
@@ -122,13 +122,22 @@ func TestGoLiveGrayStrategy_Hit(t *testing.T) {
 	oldFunc := MockTargetFunc("old_result", nil, 10*time.Millisecond)
 	newFunc := MockTargetFunc("new_result", nil, 5*time.Millisecond)
 
-	res, err := s.Execute(oldFunc, newFunc, nil, MockParamHandler(), "key_hit")
+	res, err := s.Execute(oldFunc, newFunc, nil, MockParamHandler(), nil, "key_hit", "trace_id_123", enums.GoLiveGray, nil)
 
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
 	if res != "new_result" { // Hit means we return new result
 		t.Errorf("Expected new_result, got %v", res)
+	}
+
+	// wait for potential async diff routing
+	time.Sleep(20 * time.Millisecond)
+
+	reporter.Lock()
+	defer reporter.Unlock()
+	if len(reporter.Reports) != 0 {
+		t.Fatalf("Expected 0 diff reports since hit Gray in GoLiveGray, got %d", len(reporter.Reports))
 	}
 }
 
@@ -141,7 +150,7 @@ func TestGoLiveGrayStrategy_Miss(t *testing.T) {
 	oldFunc := MockTargetFunc("old_result", nil, 10*time.Millisecond)
 	newFunc := MockTargetFunc("new_result", nil, 5*time.Millisecond)
 
-	res, err := s.Execute(oldFunc, newFunc, nil, MockParamHandler(), "key_miss")
+	res, err := s.Execute(oldFunc, newFunc, nil, MockParamHandler(), nil, "key_miss", "trace_id_123", enums.GoLiveGray, nil)
 
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
@@ -158,7 +167,7 @@ func TestFallback(t *testing.T) {
 	// Old func errors, fallback kicks in
 	oldFuncWithError := MockTargetFunc(nil, errors.New("original error"), 0)
 
-	res, err := s.Execute(oldFuncWithError, nil, MockFallbackFunc(), MockParamHandler(), "key")
+	res, err := s.Execute(oldFuncWithError, nil, MockFallbackFunc(), MockParamHandler(), nil, "key", "trace_id_123", enums.Old, nil)
 
 	if err == nil || err.Error() != "fallback executed" {
 		t.Errorf("Expected fallback error, got %v", err)

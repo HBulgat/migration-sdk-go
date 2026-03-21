@@ -11,7 +11,8 @@ import (
 // Strategy 定义阶段流转协议
 type Strategy interface {
 	Execute(oldFunc TargetFunc, newFunc TargetFunc, fallbackFunc FallbackFunc,
-		paramHandler ParamHandler, migrationKey string, args ...interface{}) (interface{}, error)
+		paramHandler ParamHandler, postProcessor PostProcessor, migrationKey string, traceId string,
+		status enums.MigrationTaskStatus, rules []grayscale.GrayRule, args ...interface{}) (interface{}, error)
 }
 
 // TargetFunc 业务目标函数签名
@@ -22,6 +23,10 @@ type FallbackFunc func(err error, args ...interface{}) (interface{}, error)
 
 // ParamHandler 灰度参数组装器
 type ParamHandler func(args ...interface{}) map[string]interface{}
+
+// PostProcessor 数据后置处理函数，在计算 Diff 前对新旧结果进行清洗与平齐
+type PostProcessor func(oldRes interface{}, newRes interface{}) (processedOld interface{}, processedNew interface{})
+
 
 // Reporter 接口剥离（简写直接引用）
 type Reporter interface {
