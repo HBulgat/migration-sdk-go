@@ -80,6 +80,11 @@ func NewClient(config *Config) *Client {
 
 func (c *Client) Wrap(migrationKey string, paramHandler ParamHandler, processor PostProcessor,
 	functions ...Function) Function {
+	if migrationKey != "" {
+		if client, ok := (*c.configClient).(*configclient.CachedConfigClient); ok {
+			client.RegistryKey(migrationKey)
+		}
+	}
 	if len(functions) < 2 {
 		panic("migration wrapped functions length must be greater than or equal to 2 (oldFunc, newFunc, [fallbackFunc])")
 	}

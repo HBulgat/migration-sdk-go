@@ -35,15 +35,17 @@ func (c *CachedConfigClient) exists(migrationKey string) bool {
 	return slices.Contains(c.RegisteredKeys, migrationKey)
 }
 
-func (c *CachedConfigClient) registryKey(migrationKey string) {
+func (c *CachedConfigClient) RegistryKey(migrationKey string) {
+	if c.exists(migrationKey) {
+		return
+	}
 	c.Lock.Lock()
 	defer c.Lock.Unlock()
 	c.RegisteredKeys = append(c.RegisteredKeys, migrationKey)
 }
+
 func (c *CachedConfigClient) GetStatus(migrationKey string) (constdef.MigrationTaskStatus, error) {
-	if !c.exists(migrationKey) {
-		c.registryKey(migrationKey)
-	}
+	c.RegistryKey(migrationKey)
 	if val, ok := c.StatusCache.Load(migrationKey); ok {
 		if status, ok := val.(constdef.MigrationTaskStatus); ok {
 			return status, nil
@@ -60,7 +62,7 @@ func (c *CachedConfigClient) GetStatus(migrationKey string) (constdef.MigrationT
 
 func (c *CachedConfigClient) GetGrayRules(migrationKey string) ([]gray.GrayRule, error) {
 	if !c.exists(migrationKey) {
-		c.registryKey(migrationKey)
+		c.RegistryKey(migrationKey)
 	}
 	if val, ok := c.RulesCache.Load(migrationKey); ok {
 		// 类型断言
