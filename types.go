@@ -18,7 +18,7 @@ type Context struct {
 	PostProcessor   PostProcessor
 	MigrationKey    string
 	MigrationStatus constdef.MigrationTaskStatus
-	GrayRules       []gray.GrayRule
+	GrayRules       []gray.Rule
 	Args            []interface{}
 	HitGray         bool
 }

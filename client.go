@@ -12,8 +12,8 @@ import (
 
 // Config 迁移配置结构体
 type Config struct {
-	ConfigCenterClientConfig *ConfigCenterClientConfig `json:"config_center_client_config"`
-	DiffReporterConfig       *DiffReporterConfig       `json:"diff_reporter_config"`
+	ConfigCenterClient *ConfigCenterClientConfig `json:"config_center_client"`
+	DiffReporter       *DiffReporterConfig       `json:"diff_reporter"`
 }
 
 type ConfigCenterClientConfig struct {
@@ -39,7 +39,7 @@ type Client struct {
 	diffReporter *diff.DiffReporter
 }
 
-func CreateConfigClient(config *ConfigCenterClientConfig) configclient.ConfigClient {
+func createConfigClient(config *ConfigCenterClientConfig) configclient.ConfigClient {
 	if config == nil {
 		panic("config is nil")
 	}
@@ -53,7 +53,7 @@ func CreateConfigClient(config *ConfigCenterClientConfig) configclient.ConfigCli
 	return configClient
 }
 
-func CreateDiffReporter(config *DiffReporterConfig) diff.DiffReporter {
+func createDiffReporter(config *DiffReporterConfig) diff.DiffReporter {
 	if config == nil {
 		panic("config is nil")
 	}
@@ -68,8 +68,8 @@ func NewClient(config *Config) *Client {
 	if config == nil {
 		panic("config is nil")
 	}
-	configClient := CreateConfigClient(config.ConfigCenterClientConfig)
-	diffReporter := CreateDiffReporter(config.DiffReporterConfig)
+	configClient := createConfigClient(config.ConfigCenterClient)
+	diffReporter := createDiffReporter(config.DiffReporter)
 	client := &Client{
 		config:       config,
 		configClient: &configClient,
@@ -110,7 +110,6 @@ func (c *Client) Wrap(migrationKey string, paramHandler ParamHandler, processor 
 
 		status, err := (*c.configClient).GetStatus(migrationKey)
 		if err != nil || status == constdef.MigrationTaskStatusUnknown {
-			// todo log: config pull failed or unknown status
 			return doFrameworkFallback()
 		}
 
@@ -142,7 +141,6 @@ func (c *Client) Wrap(migrationKey string, paramHandler ParamHandler, processor 
 			Args:            args,
 			HitGray:         gray.Match(params, rules),
 		}
-
 		res, err := executeFunc(ctx)
 		if err != nil {
 			return ExecuteFallbackAfterFailed(ctx, err)

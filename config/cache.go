@@ -60,13 +60,13 @@ func (c *CachedConfigClient) GetStatus(migrationKey string) (constdef.MigrationT
 	return status, nil
 }
 
-func (c *CachedConfigClient) GetGrayRules(migrationKey string) ([]gray.GrayRule, error) {
+func (c *CachedConfigClient) GetGrayRules(migrationKey string) ([]gray.Rule, error) {
 	if !c.exists(migrationKey) {
 		c.RegistryKey(migrationKey)
 	}
 	if val, ok := c.RulesCache.Load(migrationKey); ok {
 		// 类型断言
-		if rules, ok := val.([]gray.GrayRule); ok {
+		if rules, ok := val.([]gray.Rule); ok {
 			return rules, nil
 		}
 	}

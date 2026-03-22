@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log"
 	"math/rand"
-	"sort"
 	"strconv"
 	"sync"
 
@@ -14,20 +13,17 @@ import (
 
 var ExprCache sync.Map
 
-type GrayRule struct {
+type Rule struct {
 	RuleType  string `json:"rule_type"`
 	RuleValue string `json:"rule_value"`
 	Enable    bool   `json:"enable"`
-	Weight    int    `json:"weight"`
 }
 
-func Match(params map[string]interface{}, rules []GrayRule) bool {
+func Match(params map[string]interface{}, rules []Rule) bool {
 	if len(rules) == 0 {
 		return false
 	}
-	sort.SliceStable(rules, func(i, j int) bool {
-		return rules[i].Weight > rules[j].Weight
-	})
+
 	for _, rule := range rules {
 		if !rule.Enable {
 			continue

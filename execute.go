@@ -123,7 +123,7 @@ func ReportDiff(ctx *Context, oldRes interface{}, oldErr error, oldCost int64, n
 		NewJson:             safeJson(processedNew, newSuccess),
 		OldCostTimeMs:       int(oldCost),
 		NewCostTimeMs:       int(newCost),
-		GrayscaleParam:      safeJson(ctx.Param, true),
+		GrayParam:           safeJson(ctx.Param, true),
 		OldSuccess:          oldSuccess,
 		NewSuccess:          newSuccess,
 		OldErrorMessage:     oldErrMsg,
@@ -131,8 +131,8 @@ func ReportDiff(ctx *Context, oldRes interface{}, oldErr error, oldCost int64, n
 		OldRequestParams:    safeJson(ctx.Args, true),
 		NewRequestParams:    safeJson(ctx.Args, true),
 		MigrationTaskStatus: int(ctx.MigrationStatus),
-		GrayscaleRules:      safeJson(ctx.GrayRules, true),
-		GrayscaleHit:        ctx.HitGray,
+		GrayRules:           safeJson(ctx.GrayRules, true),
+		GrayHit:             ctx.HitGray,
 		FallbackTriggered:   false,
 	}
 

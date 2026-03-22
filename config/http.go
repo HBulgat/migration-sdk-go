@@ -39,7 +39,7 @@ func (c HttpConfigClient) GetQueryMigrationTaskURL() string {
 }
 
 func (c HttpConfigClient) GetQueryGrayRulesURL(migrationKey string) string {
-	return fmt.Sprintf("%s/api/internal/sdk/grayscale_rule/list?migration_key=%s", c.BaseURL, migrationKey)
+	return fmt.Sprintf("%s/api/internal/sdk/gray_rule/list?migration_key=%s", c.BaseURL, migrationKey)
 }
 
 func (c HttpConfigClient) GetStatus(migrationKey string) (constdef.MigrationTaskStatus, error) {
@@ -67,7 +67,7 @@ func (c HttpConfigClient) GetStatus(migrationKey string) (constdef.MigrationTask
 	return constdef.MigrationTaskStatus(status), nil
 }
 
-func (c HttpConfigClient) GetGrayRules(migrationKey string) ([]gray.GrayRule, error) {
+func (c HttpConfigClient) GetGrayRules(migrationKey string) ([]gray.Rule, error) {
 	url := c.GetQueryGrayRulesURL(migrationKey)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -77,7 +77,7 @@ func (c HttpConfigClient) GetGrayRules(migrationKey string) ([]gray.GrayRule, er
 	if err != nil {
 		return nil, err
 	}
-	var result model.Result[[]gray.GrayRule]
+	var result model.Result[[]gray.Rule]
 	if err := json.Unmarshal(resp, &result); err != nil {
 		return nil, err
 	}

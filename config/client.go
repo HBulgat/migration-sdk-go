@@ -10,5 +10,5 @@ type ConfigClient interface {
 	// GetStatus 获取当前迁移任务的迁移状态
 	GetStatus(migrationKey string) (constdef.MigrationTaskStatus, error)
 	// GetGrayRules 获取当前迁移任务的灰度规则
-	GetGrayRules(migrationKey string) ([]gray.GrayRule, error)
+	GetGrayRules(migrationKey string) ([]gray.Rule, error)
 }
